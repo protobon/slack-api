@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, Response, jsonify
 from slackeventsapi import SlackEventAdapter
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -8,7 +8,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-slack_event_adapter = SlackEventAdapter(getenv("SIGNIN_SECRET"), "/slack/events", app)
+slack_event_adapter = SlackEventAdapter(getenv("SLACK_SIGNIN_SECRET"),
+                                        "/slack/events",
+                                        app)
 client = WebClient(getenv("SLACK_TOKEN"))
 
 
@@ -66,11 +68,29 @@ def handle_mentions(event_data):
 def handle_message(event_data):
     print(event_data)
     message = event_data["event"]
-    # If the incoming message contains "hi", then respond with a "Hello" message
-    if message.get("subtype") is None and "hi" in message.get('text'):
+    if message.get("subtype") is None:
         channel = message["channel"]
-        message = "Hello <@%s>! :tada:" % message["user"]
-        client.chat_postMessage(channel=channel, text=message)
+        text = message.get("text", "").strip().lower()
+    else:
+        return
+    if text == "hi":
+        response = "Hello <@%s>! :tada:" % message["user"]
+        client.chat_postMessage(channel=channel, text=response)
+    if text == "help":
+        response = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "This is *bold* \n"
+                            "This is _italic_ \n"
+                            "This is ~strikethrough~ \n"
+                            "This is `code` \n"
+                            "```This is a code block\nAnd it's multi-line```"
+                }
+            }
+        ]
+        client.chat_postMessage(channel=channel, blocks=response)
 
 
 # Example reaction emoji echo
@@ -88,6 +108,48 @@ def reaction_added(event_data):
 @slack_event_adapter.on("error")
 def error_handler(err):
     print("ERROR: " + str(err))
+
+
+# Slash commands
+@app.post("/users")
+def list_users():
+    try:
+        data = request.form
+        channel = f"#{data.get('channel_name')}"
+        response = client.users_list()
+        message = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"Users in this workspace:\n"
+                }
+            }
+        ]
+        for user in response.data["members"]:
+            message[0]["text"]["text"] += f"- {user['real_name']}\n"
+        client.chat_postMessage(channel=channel, text="list of users", blocks=message)
+        return Response(), 200
+    except SlackApiError as e:
+        print(f"Error getting list of users: {e.response['error']}")
+
+
+@app.post("/codebase")
+def send_codebase():
+    try:
+        data = request.form
+        channel = f"#{data.get('channel_name')}"
+        with open("main.py", "rb") as f:
+            new_file = client.files_upload_v2(
+                title="My codebase",
+                filename="main.py",
+                content=f.read()
+            )
+            file_url = new_file.get("file").get("permalink")
+            client.chat_postMessage(channel=channel, text=f"Here's the file: {file_url}")
+        return Response(), 200
+    except SlackApiError as e:
+        print(f"Error sending codebase file: {e.response['error']}")
 
 
 if __name__ == "__main__":
